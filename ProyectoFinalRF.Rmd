@@ -1,0 +1,25 @@
+---
+title: "Proyecto Final - Predicción de SalePrice"
+output: html_notebook
+---
+
+
+
+```{r}
+# Paquetes requeridos
+# install.packages(c("tidyverse", "caret", "randomForest", "gbm", "glmnet", "corrplot"))
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(gbm)
+library(glmnet)
+library(corrplot)
+
+set.seed(123)
+options(scipen = 999)
+```
+
+```{r}
+
+```
+
