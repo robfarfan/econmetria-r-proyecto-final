@@ -18,8 +18,375 @@ library(corrplot)
 set.seed(123)
 options(scipen = 999)
 ```
+# 1. Definición del problema
+
+El objetivo es construir un modelo de regresión para estimar el precio de venta de viviendas (`SalePrice`).  
+La métrica principal de evaluación será **RMSE**, porque penaliza más los errores grandes y está indicada en las instrucciones del proyecto.
+
+# 2. Carga de datos
 
 ```{r}
+train <- read.csv("data_train_v3.csv", stringsAsFactors = FALSE)
+test  <- read.csv("test_v3.csv", stringsAsFactors = FALSE)
 
+cat("Train:", dim(train), "\n")
+cat("Test:", dim(test), "\n")
+
+
+head(train)
 ```
 
+# 3. Exploración inicial
+
+```{r estructura-datos}
+str(train)
+summary(train$SalePrice)
+```
+
+```{r nulos}
+missing_train <- data.frame(
+  variable = names(train),
+  nulos = colSums(is.na(train)),
+  pct_nulos = round(colSums(is.na(train)) / nrow(train) * 100, 2)
+) %>% arrange(desc(nulos))
+
+head(missing_train, 20)
+```
+
+```{r distribucion-saleprice}
+ggplot(train, aes(x = SalePrice)) +
+  geom_histogram(bins = 35) +
+  labs(title = "Distribución de SalePrice", x = "SalePrice", y = "Frecuencia")
+
+ggplot(train, aes(y = SalePrice)) +
+  geom_boxplot() +
+  labs(title = "Boxplot de SalePrice", y = "SalePrice")
+```
+
+```{r correlaciones}
+num_cols <- train %>% select(where(is.numeric))
+cor_saleprice <- cor(num_cols, use = "pairwise.complete.obs")[,"SalePrice"] %>%
+  sort(decreasing = TRUE)
+
+head(cor_saleprice, 15)
+
+corrplot(cor(num_cols[, names(head(cor_saleprice, 15))], use = "pairwise.complete.obs"),
+         method = "color", tl.cex = 0.7)
+```
+
+# 4. Ingeniería de características
+
+Se aplican las técnicas vistas en clase: imputación, transformación de variables, codificación categórica, escalado y creación de nuevas variables.
+
+```{r feature-engineering}
+preparar_datos <- function(df){
+  df <- df %>%
+    mutate(
+      MSSubClass = as.character(MSSubClass),
+      HouseAge = YrSold - YearBuilt,
+      RemodAge = YrSold - YearRemodAdd,
+      TotalSF = TotalBsmtSF + X1stFlrSF + X2ndFlrSF,
+      TotalBath = FullBath + 0.5 * HalfBath + BsmtFullBath + 0.5 * BsmtHalfBath,
+      HasGarage = ifelse(is.na(GarageArea) | GarageArea == 0, 0, 1),
+      HasFireplace = ifelse(Fireplaces == 0, 0, 1),
+      HasPool = ifelse(PoolArea == 0, 0, 1)
+    )
+  return(df)
+}
+
+train_fe <- preparar_datos(train)
+test_fe  <- preparar_datos(test)
+```
+
+# 5. Preparación para modelado
+
+```{r separacion}
+y <- train_fe$SalePrice
+train_ids <- train_fe$Id
+test_ids <- test_fe$Id
+
+x <- train_fe %>% select(-SalePrice, -Id)
+test_x <- test_fe %>% select(-Id)
+
+# Unir temporalmente train y test para asegurar mismas columnas dummy
+combined <- bind_rows(x, test_x)
+
+cat_cols <- names(combined)[sapply(combined, is.character)]
+num_cols <- names(combined)[sapply(combined, is.numeric)]
+```
+
+```{r imputacion}
+# Imputación numérica con mediana
+for(col in num_cols){
+  mediana_col <- median(combined[[col]], na.rm = TRUE)
+  combined[[col]][is.na(combined[[col]])] <- mediana_col
+}
+
+# Imputación categórica con "None"
+for(col in cat_cols){
+  combined[[col]][is.na(combined[[col]]) | combined[[col]] == ""] <- "None"
+  combined[[col]] <- as.factor(combined[[col]])
+}
+
+# One Hot Encoding
+encoder <- dummyVars(~ ., data = combined, fullRank = TRUE)
+combined_dummy <- as.data.frame(predict(encoder, newdata = combined))
+
+# División nuevamente
+x_dummy <- combined_dummy[1:nrow(x), ]
+test_dummy <- combined_dummy[(nrow(x) + 1):nrow(combined_dummy), ]
+
+# Transformación logarítmica de la variable objetivo
+log_y <- log1p(y)
+```
+
+# 6. Validación cruzada y modelos
+
+Se entrenan varios modelos de regresión. No se utilizan redes neuronales, según la restricción del proyecto.
+
+```{r particion-validacion}
+set.seed(123)
+train_index <- createDataPartition(log_y, p = 0.80, list = FALSE)
+x_train <- x_dummy[train_index, ]
+x_valid <- x_dummy[-train_index, ]
+y_train <- log_y[train_index]
+y_valid <- log_y[-train_index]
+
+rmse_real <- function(real_log, pred_log){
+  real <- expm1(real_log)
+  pred <- expm1(pred_log)
+  sqrt(mean((real - pred)^2))
+}
+
+mae_real <- function(real_log, pred_log){
+  real <- expm1(real_log)
+  pred <- expm1(pred_log)
+  mean(abs(real - pred))
+}
+```
+
+## 6.1 Regresión lineal
+
+```{r}
+# Convertir a data.frame
+x_train_lm <- as.data.frame(x_train)
+x_valid_lm <- as.data.frame(x_valid)
+
+# Estandarizar nombres de columnas en ambos datasets
+names(x_train_lm) <- make.names(names(x_train_lm), unique = TRUE)
+names(x_valid_lm) <- make.names(names(x_valid_lm), unique = TRUE)
+
+# Crear columnas faltantes en validación
+cols_faltantes <- setdiff(names(x_train_lm), names(x_valid_lm))
+
+for(col in cols_faltantes){
+  x_valid_lm[[col]] <- 0
+}
+
+# Dejar validación con mismas columnas y mismo orden que entrenamiento
+x_valid_lm <- x_valid_lm[, names(x_train_lm), drop = FALSE]
+
+# Crear data final para lm
+data_lm_train <- data.frame(y_train = y_train, x_train_lm)
+
+# Entrenar modelo
+modelo_lm <- lm(y_train ~ ., data = data_lm_train)
+
+# Predecir
+pred_lm <- predict(modelo_lm, newdata = x_valid_lm)
+
+# Resultado
+resultado_lm <- data.frame(
+  Modelo = "Regresión Lineal",
+  RMSE = rmse_real(y_valid, pred_lm),
+  MAE = mae_real(y_valid, pred_lm)
+)
+
+resultado_lm
+```
+
+
+## 6.2 Ridge / Lasso / Elastic Net con glmnet
+
+```{r modelo-glmnet}
+cv_glmnet <- cv.glmnet(
+  x = as.matrix(x_train),
+  y = y_train,
+  alpha = 0.5,
+  nfolds = 5
+)
+
+pred_glmnet <- predict(cv_glmnet, newx = as.matrix(x_valid), s = "lambda.min")
+
+resultado_glmnet <- data.frame(
+  Modelo = "Elastic Net",
+  RMSE = rmse_real(y_valid, pred_glmnet[,1]),
+  MAE = mae_real(y_valid, pred_glmnet[,1])
+)
+resultado_glmnet
+```
+
+## 6.3 Random Forest Regressor
+
+```{r modelo-rf}
+modelo_rf <- randomForest(
+  x = x_train,
+  y = y_train,
+  ntree = 600,
+  mtry = floor(sqrt(ncol(x_train))),
+  nodesize = 2,
+  importance = TRUE
+)
+
+pred_rf <- predict(modelo_rf, newdata = x_valid)
+
+resultado_rf <- data.frame(
+  Modelo = "Random Forest",
+  RMSE = rmse_real(y_valid, pred_rf),
+  MAE = mae_real(y_valid, pred_rf)
+)
+resultado_rf
+```
+
+## 6.4 Gradient Boosting
+
+```{r modelo-gbm}
+# Preparar data para GBM
+x_train_gbm <- as.data.frame(x_train)
+x_valid_gbm <- as.data.frame(x_valid)
+
+# Estandarizar nombres
+names(x_train_gbm) <- make.names(names(x_train_gbm), unique = TRUE)
+names(x_valid_gbm) <- make.names(names(x_valid_gbm), unique = TRUE)
+
+# Crear columnas faltantes en validación
+cols_faltantes <- setdiff(names(x_train_gbm), names(x_valid_gbm))
+
+for(col in cols_faltantes){
+  x_valid_gbm[[col]] <- 0
+}
+
+# Ordenar columnas igual que entrenamiento
+x_valid_gbm <- x_valid_gbm[, names(x_train_gbm), drop = FALSE]
+
+# Dataset final de entrenamiento
+data_gbm_train <- data.frame(y_train = y_train, x_train_gbm)
+
+# Entrenar GBM
+modelo_gbm <- gbm(
+  formula = y_train ~ .,
+  data = data_gbm_train,
+  distribution = "gaussian",
+  n.trees = 700,
+  interaction.depth = 3,
+  shrinkage = 0.03,
+  bag.fraction = 0.75,
+  n.minobsinnode = 2,
+  verbose = FALSE
+)
+
+# Predecir usando x_valid_gbm, no x_valid
+pred_gbm <- predict(
+  modelo_gbm,
+  newdata = x_valid_gbm,
+  n.trees = 700
+)
+
+resultado_gbm <- data.frame(
+  Modelo = "Gradient Boosting",
+  RMSE = rmse_real(y_valid, pred_gbm),
+  MAE = mae_real(y_valid, pred_gbm)
+)
+
+resultado_gbm
+```
+
+# 7. Comparación de modelos
+
+```{r comparacion}
+resultados <- bind_rows(resultado_lm, resultado_glmnet, resultado_rf, resultado_gbm) %>%
+  arrange(RMSE)
+
+resultados
+
+ggplot(resultados, aes(x = reorder(Modelo, RMSE), y = RMSE)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Comparación de modelos por RMSE", x = "Modelo", y = "RMSE")
+```
+
+# 8. Entrenamiento final y archivo de entrega
+
+El modelo final se selecciona automáticamente con base en el menor RMSE de validación.
+
+```{r modelo-final}
+mejor_modelo <- resultados$Modelo[1]
+mejor_modelo
+
+if(mejor_modelo == "Random Forest"){
+  final_model <- randomForest(
+    x = x_dummy,
+    y = log_y,
+    ntree = 600,
+    mtry = floor(sqrt(ncol(x_dummy))),
+    nodesize = 2,
+    importance = TRUE
+  )
+  pred_test_log <- predict(final_model, newdata = test_dummy)
+}
+
+if(mejor_modelo == "Gradient Boosting"){
+  final_model <- gbm(
+    formula = log_y ~ .,
+    data = data.frame(log_y = log_y, x_dummy),
+    distribution = "gaussian",
+    n.trees = 700,
+    interaction.depth = 3,
+    shrinkage = 0.03,
+    bag.fraction = 0.75,
+    n.minobsinnode = 2,
+    verbose = FALSE
+  )
+  pred_test_log <- predict(final_model, newdata = test_dummy, n.trees = 700)
+}
+
+if(mejor_modelo == "Elastic Net"){
+  final_model <- cv.glmnet(
+    x = as.matrix(x_dummy),
+    y = log_y,
+    alpha = 0.5,
+    nfolds = 5
+  )
+  pred_test_log <- predict(final_model, newx = as.matrix(test_dummy), s = "lambda.min")[,1]
+}
+
+if(mejor_modelo == "Regresión Lineal"){
+  final_model <- lm(log_y ~ ., data = data.frame(log_y = log_y, x_dummy))
+  pred_test_log <- predict(final_model, newdata = test_dummy)
+}
+
+submission <- data.frame(
+  Id = test_ids,
+  SalePrice = round(pmax(expm1(pred_test_log), 10000), 0)
+)
+
+head(submission)
+write.csv(submission, "submission_saleprice.csv", row.names = FALSE)
+```
+
+# 9. Variables importantes
+
+```{r importancia}
+if(mejor_modelo == "Random Forest"){
+  importancia <- importance(final_model)
+  varImpPlot(final_model, n.var = 20, main = "Top variables importantes - Random Forest")
+}
+```
+
+# 10. Conclusiones
+
+- El problema corresponde a **regresión supervisada**, porque la variable objetivo `SalePrice` es numérica.
+- Se aplicó limpieza, imputación, codificación categórica, transformación logarítmica e ingeniería de características.
+- La métrica principal fue **RMSE**, conforme a las instrucciones del proyecto.
+- Se compararon modelos lineales y modelos de ensamble.
+- El archivo final `submission_saleprice.csv` contiene únicamente `Id` y `SalePrice`, como solicita la competencia.
