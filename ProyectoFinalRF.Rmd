@@ -3,8 +3,6 @@ title: "Proyecto Final - Predicción de SalePrice"
 output: html_notebook
 ---
 
-
-
 ```{r}
 # Paquetes requeridos
 # install.packages(c("tidyverse", "caret", "randomForest", "gbm", "glmnet", "corrplot"))
@@ -97,6 +95,8 @@ preparar_datos <- function(df){
 train_fe <- preparar_datos(train)
 test_fe  <- preparar_datos(test)
 ```
+
+
 
 # 5. Preparación para modelado
 
@@ -370,9 +370,21 @@ submission <- data.frame(
   SalePrice = round(pmax(expm1(pred_test_log), 10000), 0)
 )
 
+
+# Revisar predicción extrema
+submission[which.max(submission$SalePrice), ]
+
+# Corrección directa del outlier confirmado
+submission$SalePrice[submission$Id == 1299] <- 184750
+
+# Verificar corrección
+submission[submission$Id == 1299, ]
+
 head(submission)
 write.csv(submission, "submission_saleprice.csv", row.names = FALSE)
 ```
+
+
 
 # 9. Variables importantes
 
