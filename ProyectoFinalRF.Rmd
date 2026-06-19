@@ -3,6 +3,7 @@ title: "Proyecto Final - Predicción de SalePrice"
 output: html_notebook
 ---
 
+
 ```{r}
 # Paquetes requeridos
 # install.packages(c("tidyverse", "caret", "randomForest", "gbm", "glmnet", "corrplot"))
@@ -309,21 +310,3 @@ write.csv(submission, "submission_saleprice.csv", row.names = FALSE)
 cat("¡Archivo 'submission_saleprice.csv' generado con éxito listo para evaluación!")
 ```
 
-
-
-# 9. Variables importantes
-
-```{r importancia}
-if(mejor_modelo == "Random Forest"){
-  importancia <- importance(final_model)
-  varImpPlot(final_model, n.var = 20, main = "Top variables importantes - Random Forest")
-}
-```
-
-# 10. Conclusiones
-
-- El problema corresponde a **regresión supervisada**, porque la variable objetivo `SalePrice` es numérica.
-- Se aplicó limpieza, imputación, codificación categórica, transformación logarítmica e ingeniería de características.
-- La métrica principal fue **RMSE**, conforme a las instrucciones del proyecto.
-- Se compararon modelos lineales y modelos de ensamble.
-- El archivo final `submission_saleprice.csv` contiene únicamente `Id` y `SalePrice`, como solicita la competencia.
